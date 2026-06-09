@@ -6,6 +6,7 @@ Sends a legal question to the Customer Agent and prints the response.
 import asyncio
 import os
 import sys
+from typing import Any
 
 import httpx
 from dotenv import load_dotenv
@@ -18,6 +19,39 @@ QUESTION = (
     "If a company breaks a contract and avoids taxes, "
     "what are the legal and regulatory consequences?"
 )
+
+
+def _extract_text_from_parts(parts: Any) -> str:
+    """Extract text from A2A Part-like objects."""
+    text = ""
+    for part in parts or []:
+        payload = getattr(part, "root", part)
+        value = getattr(payload, "text", None)
+        if value:
+            text += value
+    return text
+
+
+def _extract_text(event: Any) -> str:
+    """Extract text from Message, Task artifacts, or Task status message."""
+    result = event
+    if isinstance(event, tuple):
+        result = event[0]
+
+    text = _extract_text_from_parts(getattr(result, "parts", None))
+    if text:
+        return text
+
+    artifacts = getattr(result, "artifacts", None)
+    if artifacts:
+        for artifact in artifacts:
+            text += _extract_text_from_parts(getattr(artifact, "parts", None))
+        if text:
+            return text
+
+    status = getattr(result, "status", None)
+    status_message = getattr(status, "message", None)
+    return _extract_text_from_parts(getattr(status_message, "parts", None))
 
 
 async def main() -> None:
@@ -37,61 +71,36 @@ async def main() -> None:
             print("Make sure all services are running (./start_all.sh)")
             sys.exit(1)
 
-        from a2a.types import AgentCard, Message, Part, Role, TextPart, MessageSendParams
-        from a2a.client import A2AClient
-        from uuid import uuid4
+        from a2a.client import ClientConfig, ClientFactory, create_text_message_object
+        from a2a.types import AgentCard
 
         agent_card = AgentCard.model_validate(card_resp.json())
         print(f"Connected to agent: {agent_card.name} v{agent_card.version}")
         print("-" * 60)
 
-        # Build the legacy A2AClient
-        client = A2AClient(httpx_client=http_client, agent_card=agent_card)
-
-        # Construct the message
-        from a2a.types import SendMessageRequest, MessageSendParams as MSP
-        message = Message(
-            role=Role.user,
-            parts=[Part(root=TextPart(text=QUESTION))],
-            message_id=str(uuid4()),
-        )
-        request = SendMessageRequest(
-            id=str(uuid4()),
-            params=MSP(message=message),
-        )
+        client = ClientFactory(
+            ClientConfig(streaming=False, httpx_client=http_client)
+        ).create(agent_card)
+        message = create_text_message_object(content=QUESTION)
 
         print("Sending request (this may take 30-60s while agents chain)...\n")
-        response = await client.send_message(request)
-
-        # Parse response
         result_text = ""
-        if hasattr(response, "root"):
-            root = response.root
-            if hasattr(root, "result"):
-                result = root.result
-                # Task with artifacts
-                if hasattr(result, "artifacts") and result.artifacts:
-                    for artifact in result.artifacts:
-                        for part in artifact.parts:
-                            p = part.root if hasattr(part, "root") else part
-                            if hasattr(p, "text"):
-                                result_text += p.text
-                # Message with parts
-                elif hasattr(result, "parts") and result.parts:
-                    for part in result.parts:
-                        p = part.root if hasattr(part, "root") else part
-                        if hasattr(p, "text"):
-                            result_text += p.text
+        async for event in client.send_message(message):
+            result_text = _extract_text(event) or result_text
 
-        if result_text:
-            print("RESPONSE:")
-            print("=" * 60)
-            print(result_text)
-            print("=" * 60)
-        else:
-            print("No text response received. Raw response:")
-            print(response)
+        if not result_text:
+            print("No text response received from the agent.")
+            return
+
+        print("RESPONSE:")
+        print("=" * 60)
+        print(result_text)
+        print("=" * 60)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted by user before the agent returned a final response.")
+        sys.exit(130)

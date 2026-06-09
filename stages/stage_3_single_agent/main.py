@@ -173,6 +173,7 @@ def check_compliance_requirements(industry: str, company_size: str) -> str:
 
 
 TOOLS = [search_legal_database, calculate_penalty, check_compliance_requirements]
+DEBUG_AGENT = True
 
 QUESTION = (
     "A tech startup with $5M revenue was caught sharing user data without consent "
@@ -205,7 +206,12 @@ async def main():
     print("-" * 70)
 
     llm = get_llm()
-    graph = create_react_agent(model=llm, tools=TOOLS, prompt=SYSTEM_PROMPT)
+    graph = create_react_agent(
+        model=llm,
+        tools=TOOLS,
+        prompt=SYSTEM_PROMPT,
+        debug=DEBUG_AGENT,
+    )
 
     inputs = {"messages": [{"role": "user", "content": QUESTION}]}
 
